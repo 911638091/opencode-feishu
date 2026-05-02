@@ -165,7 +165,7 @@ interface CardActionEvt {
  * 不抛异常 — 缺关键字段时返回带空字符串的 envelope（formName / formButtonName 等可空），
  * 让上层 form_submit 分支决定如何拒收并保留诊断日志。
  */
-function buildFormSubmitEnvelope(evt: CardActionEvt): FormSubmitActionValue | undefined {
+function buildFormSubmitEnvelope(evt: CardActionEvt, log?: LogFn): FormSubmitActionValue | undefined {
   if (evt.action?.tag !== "button") return undefined
   if (typeof evt.action.form_value !== "object" || evt.action.form_value === null) return undefined
 
@@ -174,7 +174,7 @@ function buildFormSubmitEnvelope(evt: CardActionEvt): FormSubmitActionValue | un
     ? formButtonName.slice("btn_submit_".length)
     : ""
 
-  const formValue = normalizeFormValue(evt.action.form_value)
+  const formValue = normalizeFormValue(evt.action.form_value, log)
   const customValue =
     typeof evt.action.value === "object" && evt.action.value !== null
       ? (evt.action.value as Record<string, unknown>)
@@ -446,7 +446,7 @@ export function startFeishuGateway(options: FeishuGatewayOptions): FeishuGateway
           evt.action.form_value !== null &&
           typeof evt.action.form_value === "object"
         )
-          ? buildFormSubmitEnvelope(evt)
+          ? buildFormSubmitEnvelope(evt, log)
           : undefined
 
         if (formSubmitEnvelope) {
