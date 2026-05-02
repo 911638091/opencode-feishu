@@ -25,8 +25,9 @@ import type { LogFn } from "../types.js"
 
 const z = tool.schema
 
-// ── form field schemas（与 send-card.ts FormFieldSchema 等价定义，复用 tool.schema 即 zod）──
-// 验证消息与 send-card.ts 保持一致，防止两处定义静默分化。
+// ── form field schemas ──
+// 与 send-card.ts 保持字面量一致。无法共享导出：tool.schema 的 Zod 实例
+// 产生的推断类型引用 @opencode-ai/plugin/node_modules/zod，TS2742 阻止 export。
 
 const FIELD_NAME_PATTERN = /^[a-zA-Z][a-zA-Z0-9_]{0,19}$/
 const FIELD_NAME_ERROR = "字段名与命名规则不一致：必须以字母开头，仅含字母数字下划线，长度 1-20"
