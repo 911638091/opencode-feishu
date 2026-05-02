@@ -503,7 +503,8 @@ export function startFeishuGateway(options: FeishuGatewayOptions): FeishuGateway
           void (async () => {
             let displayName = formSubmitEnvelope.operatorId
             try {
-              displayName = await resolveUserName(larkClient, formSubmitEnvelope.operatorId, log)
+              const rawName = await resolveUserName(larkClient, formSubmitEnvelope.operatorId, log)
+              displayName = rawName.replace(/[\r\n]+/g, " ").slice(0, 50)
             } catch (err) {
               log("warn", "form_submit displayName 解析失败，fallback 为 operatorId", {
                 operatorId: formSubmitEnvelope.operatorId,
