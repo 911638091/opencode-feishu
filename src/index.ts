@@ -37,6 +37,7 @@ import { handleCardAction, type InteractiveDeps } from "./handler/interactive.js
 import { ingestGroupHistory } from "./feishu/history.js"                           // Bot 入群时批量摄入群聊历史消息
 import { initDedup } from "./feishu/dedup.js"                                      // 消息去重缓存初始化（默认 10 分钟窗口）
 import { createSendCardTool } from "./tools/send-card.js"                          // Agent 可调用的 feishu_send_card tool 工厂
+import { createRequestFormTool } from "./tools/request-form.js"                    // 阻塞型 feishu_request_form tool 工厂
 import { getChatIdBySession } from "./feishu/session-chat-map.js"                  // 会话 → 聊天 ID 映射查询（判断是否飞书会话）
 import { createOpencodeClient } from "@opencode-ai/sdk/v2/client"                  // OpenCode v2 REST 客户端（用于权限/问答交互回复）
 import { TtlMap } from "./utils/ttl-map.js" // 引入已有的 TtlMap：60s 缓存 config.get() 结果，消除 system.transform 每次触发都调 HTTP 的开销
@@ -187,6 +188,7 @@ export const FeishuPlugin: Plugin = async (ctx) => {
     },
     tool: {
       feishu_send_card: createSendCardTool({ feishuClient: larkClient, log }),
+      feishu_request_form: createRequestFormTool({ feishuClient: larkClient, log }),
     },
     "experimental.chat.system.transform": async (input, output) => {
       // 仅在飞书会话中注入最小运行时 prompt，非飞书会话不干扰 agent

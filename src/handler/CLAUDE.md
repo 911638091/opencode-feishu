@@ -44,8 +44,15 @@
 
 **interactive.ts** — 权限/问答交互卡片与按钮回调
 - `handlePermissionRequested()` / `handleQuestionRequested()` 使用 `buildCardFromDSL` 构建交互卡片并发送到飞书，`seenIds` TtlMap 防止重复发送
-- `handleCardAction()` 解析卡片按钮回调 value → 路由到 v2Client 的 permission / question / abort reply
+- `handleCardAction()` 解析卡片按钮回调 value → 路由到 v2Client 的 permission / question / abort reply；spec 031 扩展了 `ParsedCardActionValue` 联合（新增 `FormSubmitActionValue` 第 5 种 action）和 `normalizeFormValue` / `validateChatScopeForFormSubmit` 辅助函数
 - `buildCallbackResponse()` 返回 toast 即时反馈（飞书 3 秒约束），abort 按钮通过 reply-run-registry 管理取消流程
+- `buildFormSubmitPrompt()` 构造 form_submit 的结构化 prompt 前缀（FR-018 + FR-020a），含 displayName 解析 + JSON 包装
+
+**pending-forms.ts** — 阻塞型 feishu_request_form tool 的全局注册表
+- `PendingForm` interface（formName / sessionId / chatId / createdAt / resolver）+ `FormSubmitResult` interface（formValue / operatorId / timezone / callbackChatId）
+- `registerPendingForm()` / `unregisterPendingForm()` 注册和清理
+- `resolvePendingForm()` 三路 race 的核心：chatId 跨群拒收（EC-024）→ resolver 触发 → 返回 boolean 供 gateway 判定 P3 命中或 P1 fallback
+- TtlMap 自动过期（MAX_FORM_TIMEOUT_SECONDS = 1800s 兜底）
 
 **errors.ts** — 错误分类（typed discriminated union）
 - `classify(raw): PluginError` 纯函数，按优先级链判定：Auth → Context → Model → Poison → fallback
