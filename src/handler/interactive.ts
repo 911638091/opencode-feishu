@@ -17,6 +17,17 @@ import {
 } from "./reply-run-registry.js"
 import { emit } from "./action-bus.js"
 
+/**
+ * form_submit toast 文案常量。
+ *
+ * 飞书 card.action.trigger 要求 3 秒内返回，此处的 toast 是同步即时反馈。
+ * 区分两个语义：
+ * - RECEIVED：P3 阻塞型 tool 命中，resolver 已立即返回结果（同步处理完）
+ * - PROCESSING：P1 syntheticCtx 路径或 fallback，已投递异步处理（仍要等 agent）
+ */
+export const FORM_SUBMIT_RECEIVED_TOAST = "📋 已收到提交"
+export const FORM_SUBMIT_PROCESSING_TOAST = "📋 已收到，正在处理..."
+
 /** 交互模块需要的外部依赖。 */
 export interface InteractiveDeps {
   /** 飞书 SDK client，用于实际发送卡片。 */
@@ -502,7 +513,10 @@ export async function handleCardAction(
         error: err instanceof Error ? err.message : String(err),
       })
     })
-    return buildToast("success", abortResult.feedback)
+    // toast 用 "info" 进行态：v2Client.session.abort 是 fire-and-forget（line 501-515），
+    // 失败仅 log + resetAbortForRun，不发用户面失败提示。用 "success" 会形成 F21 同构反模式
+    // （toast 完成态 vs async 可能失败）。"info" 表达"已接收请求，正在处理"，与异步结果对齐。
+    return buildToast("info", abortResult.feedback)
   }
 
   if (!deps.v2Client) {
@@ -570,35 +584,39 @@ export function buildCallbackResponse(action: CardActionData, log?: LogFn): obje
   const value = parseCardActionValue(action.actionValue, log)
   if (!value) return {}
 
+  // permission_reply / question_reply / abort_reply 的实际处理走 fire-and-forget async（见
+  // handleCardAction line 557-565 的 v2Client.permission.reply / question.reply）；toast 必须用
+  // "info" + 进行态文案，避免 F21 同构反模式（toast 完成态 vs async 可能失败的矛盾信号）。
+  // 失败时仅 emitPhase("error",...) 在折叠面板更新，无用户面失败提示——这是已知设计代价。
   if (value.action === "permission_reply") {
     const isReject = value.reply === "reject"
     return {
       toast: {
-        type: isReject ? "warning" : "success",
-        content: isReject ? "❌ 已拒绝" : "✅ 已允许",
+        type: "info",
+        content: isReject ? "🚫 已收到拒绝请求，正在转交..." : "📨 已收到允许请求，正在转交...",
       },
     }
   }
 
   if (value.action === "question_reply") {
     return {
-      toast: { type: "success", content: "✅ 已回答" },
+      toast: { type: "info", content: "📨 已收到回答，正在转交..." },
     }
   }
 
   if (value.action === "abort_reply") {
-    return buildToast("success", "已接收中断请求，正在停止回答")
+    return buildToast("info", "已接收中断请求，正在停止回答")
   }
 
   if (value.action === "send_message") {
     return {
-      toast: { type: "info", content: "📨 已发送" },
+      toast: { type: "info", content: "📨 已收到，正在发送..." },
     }
   }
 
   if (value.action === "form_submit") {
     return {
-      toast: { type: "info", content: "📨 已提交" },
+      toast: { type: "info", content: FORM_SUBMIT_PROCESSING_TOAST },
     }
   }
 
