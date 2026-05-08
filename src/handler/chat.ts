@@ -539,6 +539,15 @@ export async function handleChat(ctx: FeishuMessageContext, deps: ChatDeps, sign
     // 复用 session 时，轮询必须忽略与 baseline 相同的旧 turn 快照。
     const { data: baselineMessages } = await client.session.messages({ path: { id: session.id }, query }).catch(() => ({ data: undefined }))
     const baseline = extractLastAssistantSnapshot(baselineMessages ?? [])
+    log("info", "baseline captured", {
+      sessionKey,
+      sessionId: session.id,
+      // fetchSuccess=false 区分"fetch 失败"和"session 真的为空"——两者都会 hasBaseline=false 但语义不同。
+      fetchSuccess: baselineMessages !== undefined,
+      hasBaseline: baseline.text.length > 0 || baseline.reasoning.length > 0,
+      textLen: baseline.text.length,
+      reasoningLen: baseline.reasoning.length,
+    })
 
     await client.session.promptAsync({
       path: { id: session.id },
