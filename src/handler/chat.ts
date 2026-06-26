@@ -27,7 +27,7 @@ import { extractParts, type PromptPart } from "../feishu/content-extractor.js"
 import { resolveUserName } from "../feishu/user-name.js"
 import { fetchQuotedMessage } from "../feishu/quote.js"
 import type * as Lark from "@larksuiteoapi/node-sdk"
-import { subscribe } from "./action-bus.js"
+import { getSessionIdleVersion, subscribe } from "./action-bus.js"
 import type { CardKitClient } from "../feishu/cardkit.js"
 import { StreamingCard } from "../feishu/streaming-card.js"
 import { handlePermissionRequested, handleQuestionRequested, type InteractiveDeps } from "./interactive.js"
@@ -576,6 +576,7 @@ export async function handleChat(ctx: FeishuMessageContext, deps: ChatDeps, sign
       query?: { directory: string }
       signal?: AbortSignal
       baseline?: AssistantSnapshot
+      idleAfterVersion?: number
     },
   ) => pollForResponse(currentClient, currentSessionId, {
     ...pollOptions,
@@ -604,6 +605,7 @@ export async function handleChat(ctx: FeishuMessageContext, deps: ChatDeps, sign
       reasoningLen: baseline.reasoning.length,
     })
 
+    const idleAfterVersion = getSessionIdleVersion(session.id)
     await client.session.promptAsync({
       path: { id: session.id },
       query,
@@ -622,6 +624,7 @@ export async function handleChat(ctx: FeishuMessageContext, deps: ChatDeps, sign
       query,
       signal: mergeAbortSignals([signal, getRunAbortSignal(run.runId)]),
       baseline,
+      idleAfterVersion,
     })
 
     log("info", "模型响应完成", {
@@ -706,6 +709,7 @@ export async function handleChat(ctx: FeishuMessageContext, deps: ChatDeps, sign
             clearSessionError(session.id)
 
             try {
+              const idleAfterVersion = getSessionIdleVersion(session.id)
               await client.session.promptAsync({
                 path: { id: session.id },
                 query,
@@ -715,6 +719,7 @@ export async function handleChat(ctx: FeishuMessageContext, deps: ChatDeps, sign
               const finalText = await poll(client, session.id, {
                 timeout, pollInterval, stablePolls, query,
                 signal: mergeAbortSignals([signal, getRunAbortSignal(run.runId)]),
+                idleAfterVersion,
               })
 
               const actualModel = await fetchActualModel(client, session.id, log, query)
@@ -945,7 +950,7 @@ async function buildPromptParts(
  * 轮询等待 AI 响应稳定，返回最终文本。
  * 每次 poll 周期检查 SSE 缓存的 session error，检测到时立即终止并抛出异常。
  */
-async function pollForResponse(
+export async function pollForResponse(
   client: OpencodeClient,
   sessionId: string,
   opts: {
@@ -956,22 +961,22 @@ async function pollForResponse(
     signal?: AbortSignal
     /** promptAsync 前捕获的 baseline，用于忽略旧 turn 的快照。 */
     baseline?: AssistantSnapshot
+    /** promptAsync 前的 session-idle 版本，用于捕获 promptAsync 期间到达的 idle。 */
+    idleAfterVersion?: number
     onSnapshot?: (snapshot: AssistantSnapshot) => void | Promise<void>
     onTick?: () => void | Promise<void>
     onTimedOut?: () => void
   },
 ): Promise<string> {
-  const { timeout, pollInterval, stablePolls, query, signal, baseline, onSnapshot, onTick, onTimedOut } = opts
+  const { timeout, pollInterval, query, signal, baseline, idleAfterVersion, onSnapshot, onTick, onTimedOut } = opts
   // 轮询开始时间，用于超时判断。
   const start = Date.now()
   // 最近一次看到的 assistant 快照。
   let lastSnapshot: AssistantSnapshot = { text: "", reasoning: "" }
-  // 连续多少次轮询结果完全相同。
-  let sameCount = 0
   let didTimeOut = false
 
   // 通过 action-bus 感知 `session.idle`，让轮询可以提前结束。
-  let sessionIdle = false
+  let sessionIdle = idleAfterVersion !== undefined && getSessionIdleVersion(sessionId) > idleAfterVersion
   const unsub = subscribe(sessionId, (action) => {
     if (action.type === "session-idle") {
       sessionIdle = true
@@ -1002,16 +1007,14 @@ async function pollForResponse(
         throw new SessionErrorDetected(sseError)
       }
 
-      // session.idle 提前退出：收到信号后跳出循环，再做最后一次 fetch。
-      if (sessionIdle) {
-        break
-      }
+      const shouldStopAfterFetch = sessionIdle
 
       const { data: messages } = await client.session.messages({ path: { id: sessionId }, query })
       const snapshot = extractLastAssistantSnapshot(messages ?? [])
 
       // 忽略与 baseline 相同的快照（旧 turn 的回复），避免复用 session 时提前收敛。
       if (baseline && !hasAssistantSnapshotChanged(snapshot, baseline)) {
+        if (shouldStopAfterFetch) sessionIdle = false
         // 快照与 baseline 相同，说明新 turn 尚未产生输出，继续等待。
         continue
       }
@@ -1019,14 +1022,14 @@ async function pollForResponse(
       if (hasAssistantSnapshotChanged(snapshot, lastSnapshot)) {
         // 看到新快照：更新并重置稳定计数。
         lastSnapshot = snapshot
-        sameCount = 0
         if (onSnapshot) {
           await onSnapshot(snapshot)
         }
-      } else if (snapshot.text && snapshot.text.length > 0) {
-        // 文本没变：累计稳定次数，达到阈值后可认为输出基本结束。
-        sameCount++
-        if (sameCount >= stablePolls) break
+      }
+
+      // session.idle 提前退出：确认不是 baseline 旧快照后跳出循环，再做最后一次 fetch。
+      if (shouldStopAfterFetch) {
+        break
       }
     }
 
