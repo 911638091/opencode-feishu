@@ -74,6 +74,7 @@ opencode
 | `dedupTtl` | number | 否 | `600000` | 消息去重缓存过期时间（毫秒） |
 | `maxResourceSize` | number | 否 | `524288000` | 单个资源最大下载大小（字节，默认 500MB） |
 | `directory` | string | 否 | `OpenCode 当前工作目录` | 默认工作目录，支持 `~` 和 `${ENV_VAR}` 展开；若 OpenCode 未提供则为空字符串 |
+| `chatDirectories` | Record<string, string> | 否 | `{}` | 按飞书 chatId 指定独立工作目录（一群一 project）；键为 chatId（如 `oc_xxx`），值为绝对路径；未命中的 chatId 回退到 `directory`。支持 `~` 和 `${ENV_VAR}` 展开 |
 | `nudge.enabled` | boolean | 否 | `false` | 启用 session.idle 催促；命中条件时向 OpenCode 发送 synthetic prompt，而不是直接向飞书新增可见消息 |
 | `nudge.intervalSeconds` | number | 否 | `30` | 同一 session 连续催促的最小间隔（秒） |
 | `nudge.maxIterations` | number | 否 | `3` | 同一 session 最大催促次数（用户新消息后重置） |
@@ -88,6 +89,8 @@ opencode
 - **多媒体消息支持** — 图片、文件、音频、富文本（含内嵌图片）、卡片表格等，自动下载转换
 - **用户名显示** — 群聊消息自动解析飞书用户名替代 open_id（24h 缓存）
 - **消息引用解析** — 解析飞书回复/引用关系，将被引用消息内容作为上下文传给 AI
+- **单人群自动回复** — 群成员仅 bot + 1 用户时视为伪单聊，无需 @bot 自动回复
+- **一群一 project** — `chatDirectories` 按飞书 chatId 指定独立工作目录，不同群对接不同项目
 - **群聊静默监听** — 所有群消息作为上下文积累，仅 @提及时回复
 - **FIFO 消息队列** — P2P 和群聊统一串行队列，消息按顺序处理不互相中断
 - **入群自动摄入历史消息**
@@ -107,6 +110,7 @@ opencode
 |------|:---:|:---:|:---:|
 | 单聊 | 是 | 是 | 是（流式卡片） |
 | 群聊 + @bot | 是 | 是 | 是（流式卡片） |
+| 群聊仅 2 人（单人群） | 是 | 是 | 是（流式卡片，无需 @） |
 | 群聊未 @bot | 是 | 否（静默积累上下文） | 否 |
 | bot 入群 | 历史消息 | 否 | 否 |
 
