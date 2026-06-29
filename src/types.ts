@@ -82,6 +82,14 @@ export const FeishuConfigSchema = z.object({
   nudge: NudgeSchema.default(() => NudgeSchema.parse({})),
   /** OpenCode 工作目录，可在启动阶段进一步展开。 */
   directory: z.string().optional(),
+  /**
+   * 按飞书 chatId 指定独立的 OpenCode 工作目录。
+   *
+   * 键为飞书 chatId（如 `oc_xxx`），值为对应 project 的绝对路径。
+   * 未命中的 chatId 回退到 `directory`（或 OpenCode 当前工作目录）。
+   * 支持 `~` 和 `${ENV_VAR}` 展开（与 `directory` 一致）。
+   */
+  chatDirectories: z.record(z.string(), z.string()).optional(),
 })
 
 /**
@@ -94,7 +102,11 @@ export type FeishuPluginConfig = z.input<typeof FeishuConfigSchema>
 /**
  * 经过 Zod 补齐默认值后的“运行态”配置。
  */
-export type ResolvedConfig = z.infer<typeof FeishuConfigSchema> & { directory: string }
+export type ResolvedConfig = z.infer<typeof FeishuConfigSchema> & {
+  directory: string
+  /** 展开后的 chatId → directory 映射（路径已展开 `~` 和 `${VAR}`）。 */
+  chatDirectories: Record<string, string>
+}
 
 /**
  * 项目内部统一日志函数签名。

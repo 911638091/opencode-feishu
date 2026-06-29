@@ -3,7 +3,7 @@
  *
  * 目标是既保留上下文连续性，又避免每条消息都去远端扫描 session 列表。
  */
-import type { OpencodeClient } from "@opencode-ai/sdk"
+import { type OpencodeClient } from "@opencode-ai/sdk"
 import { TtlMap } from "./utils/ttl-map.js"
 
 /** 逻辑会话键的固定前缀，避免与其他渠道混淆。 */
@@ -28,6 +28,47 @@ const forceCreateSession = new TtlMap<true>(SESSION_CACHE_TTL)
  */
 function setCachedSession(sessionKey: string, session: { id: string; title?: string }): void {
   sessionCache.set(sessionKey, session)
+}
+
+/**
+ * sessionId → directory 映射。
+ *
+ * 记录每个 OpenCode session 创建/复用时使用的 directory，
+ * 供 event.ts 等只有 sessionId 的场景反查正确的 directory。
+ * 使用 TtlMap 与 sessionCache 保持一致的 TTL 策略。
+ */
+const sessionDirectoryMap = new TtlMap<string>(SESSION_CACHE_TTL)
+
+/**
+ * 记录 sessionId 对应的 directory。
+ */
+export function registerSessionDirectory(sessionId: string, directory: string): void {
+  sessionDirectoryMap.set(sessionId, directory)
+}
+
+/**
+ * 查询 sessionId 对应的 directory。
+ *
+ * 未找到时返回 undefined，调用方应回退到默认 directory。
+ */
+export function getDirectoryBySession(sessionId: string): string | undefined {
+  return sessionDirectoryMap.get(sessionId)
+}
+
+/**
+ * 根据 chatId 解析对应的 directory。
+ *
+ * 查找顺序：
+ * 1. chatDirectories 中精确匹配 chatId
+ * 2. 回退到 defaultDirectory
+ */
+export function resolveChatDirectory(
+  chatId: string,
+  chatDirectories: Record<string, string>,
+  defaultDirectory: string,
+): string {
+  const mapped = chatDirectories[chatId]
+  return mapped || defaultDirectory
 }
 
 /**
@@ -73,11 +114,14 @@ export async function getOrCreateSession(
   sessionKey: string,
   directory?: string,
 ): Promise<{ id: string; title?: string }> {
-  // 如果该逻辑会话刚被判定为“必须新建”，则本轮禁止命中任何旧 session。
+  // 如果该逻辑会话刚被判定为"必须新建"，则本轮禁止命中任何旧 session。
   const mustCreateFresh = forceCreateSession.has(sessionKey)
   // 第一层：本地缓存命中时直接返回，避免频繁 list session。
   const cached = sessionCache.get(sessionKey)
-  if (cached && !mustCreateFresh) return cached
+  if (cached && !mustCreateFresh) {
+    if (directory) registerSessionDirectory(cached.id, directory)
+    return cached
+  }
 
   // 第二层：按标题前缀在远端已有 session 中反查。
   const titlePrefix = `${TITLE_PREFIX}-${sessionKey}-`
@@ -102,6 +146,7 @@ export async function getOrCreateSession(
           if (best?.id) {
             const session = { id: best.id, title: best.title }
             setCachedSession(sessionKey, session)
+            if (directory) registerSessionDirectory(best.id, directory)
             return session
           }
         }
@@ -121,8 +166,9 @@ export async function getOrCreateSession(
     )
   }
   const session = { id: createResp.data.id, title: createResp.data.title }
-  // 一旦成功创建新会话，就清除“强制新建”标记，后续继续允许正常复用最新 session。
+  // 一旦成功创建新会话，就清除"强制新建"标记，后续继续允许正常复用最新 session。
   forceCreateSession.delete(sessionKey)
   setCachedSession(sessionKey, session)
+  if (directory) registerSessionDirectory(session.id, directory)
   return session
 }

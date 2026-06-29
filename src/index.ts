@@ -39,6 +39,7 @@ import { initDedup } from "./feishu/dedup.js"                                   
 import { createSendCardTool } from "./tools/send-card.js"                          // Agent 可调用的 feishu_send_card tool 工厂
 import { createRequestFormTool } from "./tools/request-form.js"                    // 阻塞型 feishu_request_form tool 工厂
 import { getChatIdBySession } from "./feishu/session-chat-map.js"                  // 会话 → 聊天 ID 映射查询（判断是否飞书会话）
+import { resolveChatDirectory, getDirectoryBySession } from "./session.js"          // 按 chatId 解析 directory + 按 sessionId 反查 directory
 import { createOpencodeClient } from "@opencode-ai/sdk/v2/client"                  // OpenCode v2 REST 客户端（用于权限/问答交互回复）
 import { TtlMap } from "./utils/ttl-map.js" // 引入已有的 TtlMap：60s 缓存 config.get() 结果，消除 system.transform 每次触发都调 HTTP 的开销
 
@@ -155,12 +156,18 @@ export const FeishuPlugin: Plugin = async (ctx) => {
     onMessage: async (msgCtx) => {
       // 网关未完成初始化或消息为空时，不进入主处理链路。
       if (!msgCtx.content.trim() || !gateway) return
+      // 按 chatId 解析该聊天对应的 directory（支持一群一 project）。
+      const chatDirectory = resolveChatDirectory(
+        msgCtx.chatId,
+        resolvedConfig.chatDirectories,
+        resolvedConfig.directory,
+      )
       await enqueueMessage(msgCtx, {
         config: resolvedConfig,
         client,
         feishuClient: larkClient,
         log,
-        directory: resolvedConfig.directory,
+        directory: chatDirectory,
         cardkit,
         interactiveDeps,
         v2Client,
@@ -168,11 +175,17 @@ export const FeishuPlugin: Plugin = async (ctx) => {
     },
     onBotAdded: (chatId) => {
       if (!gateway) return
+      // 按 chatId 解析该群对应的 directory（支持一群一 project）。
+      const chatDirectory = resolveChatDirectory(
+        chatId,
+        resolvedConfig.chatDirectories,
+        resolvedConfig.directory,
+      )
       // Bot 刚入群时异步补录历史消息，帮助模型建立初始上下文。
       ingestGroupHistory(larkClient, client, chatId, {
         maxMessages: resolvedConfig.maxHistoryMessages,
         log,
-        directory: resolvedConfig.directory,
+        directory: chatDirectory,
       }).catch((err) => {
         log("error", "群聊历史摄入失败", {
           chatId,
@@ -197,7 +210,11 @@ export const FeishuPlugin: Plugin = async (ctx) => {
     event: async ({ event }) => {
       // 只有网关可用时才消费 OpenCode SSE 事件。
       if (!gateway) return
-      await handleEvent(event, { log, directory: resolvedConfig.directory, client, nudge: resolvedConfig.nudge })
+      // 按 sessionId 反查该会话对应的 directory（支持一群一 project）。
+      const eventSessionId = (event as any)?.properties?.sessionID as string | undefined
+      const eventDirectory = (eventSessionId && getDirectoryBySession(eventSessionId))
+        ?? resolvedConfig.directory
+      await handleEvent(event, { log, directory: eventDirectory, client, nudge: resolvedConfig.nudge })
     },
     tool: {
       feishu_send_card: createSendCardTool({ feishuClient: larkClient, log }),
@@ -208,14 +225,16 @@ export const FeishuPlugin: Plugin = async (ctx) => {
       if (!input.sessionID || !getChatIdBySession(input.sessionID)) return
       output.system.push(feishuRuntimePrompt)
 
+      // 按 sessionId 反查该会话对应的 directory（支持一群一 project）。
+      const sessionDirectory = getDirectoryBySession(input.sessionID) ?? resolvedConfig.directory
       // 注入运行时上下文（工作目录 + 当前模型）
-      const runtimeLines = [`当前工作目录: ${resolvedConfig.directory || ctx.directory || "未设置"}`]
+      const runtimeLines = [`当前工作目录: ${sessionDirectory || ctx.directory || "未设置"}`]
       try {
         // 先查缓存；缓存命中则跳过 HTTP 调用（60s 内有效）
         let cached = configCache.get(CONFIG_CACHE_KEY)
         if (!cached) {
           // 缓存未命中，调一次 HTTP 并写入缓存
-          const cfg = await client.config.get({ query: { directory: resolvedConfig.directory || undefined } })
+          const cfg = await client.config.get({ query: { directory: sessionDirectory || undefined } })
           cached = { model: cfg?.data?.model }
           configCache.set(CONFIG_CACHE_KEY, cached)
         }
@@ -282,7 +301,13 @@ function loadAndValidateConfig(configPath: string, ctxDirectory: string): Resolv
   const raw = resolveEnvPlaceholders(JSON.parse(readFileSync(configPath, "utf-8")))
   const parsed = FeishuConfigSchema.parse(raw)
   // directory 在这里统一展开成最终运行时路径。
-  return { ...parsed, directory: expandDirectoryPath(parsed.directory ?? ctxDirectory ?? "") }
+  const directory = expandDirectoryPath(parsed.directory ?? ctxDirectory ?? "")
+  // chatDirectories 中每条路径也独立展开，未命中的 chatId 回退到 directory。
+  const chatDirectories: Record<string, string> = {}
+  for (const [chatId, rawDir] of Object.entries(parsed.chatDirectories ?? {})) {
+    chatDirectories[chatId] = expandDirectoryPath(rawDir)
+  }
+  return { ...parsed, directory, chatDirectories }
 }
 
 /**

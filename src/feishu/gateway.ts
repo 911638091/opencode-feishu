@@ -27,6 +27,7 @@ import { isDuplicate } from "./dedup.js"
 import { describeMessageType } from "./content-extractor.js"
 import { isBotMentioned } from "./group-filter.js"
 import { resolveUserName } from "./user-name.js"
+import { TtlMap } from "../utils/ttl-map.js"
 
 // 兼容 Bun 和 Node.js 的 CJS/ESM interop。
 const { HttpsProxyAgent } = httpsProxyAgent
@@ -200,6 +201,9 @@ function buildFormSubmitEnvelope(evt: CardActionEvt, log?: LogFn): FormSubmitAct
  */
 export function startFeishuGateway(options: FeishuGatewayOptions): FeishuGatewayResult {
   const { config, larkClient, botOpenId = "", onMessage, onBotAdded, onCardAction, log } = options
+
+  // 群成员数量缓存（1h TTL），用于判断是否为"单人群"（仅 bot + 1 用户）
+  const groupMemberCache = new TtlMap<number>(3600_000)
   const { appId, appSecret } = config
   // 优先读取常见代理环境变量，让 WebSocket 也能跟随企业网络设置。
   const proxyUrl =
@@ -264,7 +268,60 @@ export function startFeishuGateway(options: FeishuGatewayOptions): FeishuGateway
             mentions as Array<{ id?: { open_id?: string } }>,
             botOpenId,
           )
+          log("info", "群聊 @提及检测结果", {
+            chatId,
+            botOpenId,
+            mentionsCount: mentions.length,
+            isBotMentioned: shouldReply,
+          })
+          if (!shouldReply) {
+            // 群成员只有 2 人（1 用户 + bot）时视为伪单聊，自动回复
+            // 飞书 user_count 包含 bot 自身，所以阈值是 2
+            const cachedCount = groupMemberCache.get(String(chatId))
+            if (cachedCount !== undefined) {
+              log("info", "群成员数命中缓存", { chatId, cachedCount })
+              if (cachedCount <= 2) shouldReply = true
+            } else {
+              try {
+                log("info", "调用 im.chat.get 获取群成员数", { chatId })
+                const chatResp = await larkClient.im.chat.get({
+                  path: { chat_id: String(chatId) },
+                })
+                const rawUserCount = (chatResp?.data as Record<string, unknown>)?.user_count
+                // 飞书 API 可能返回字符串或数字，统一转换为数字
+                const userCount = typeof rawUserCount === "string" 
+                  ? parseInt(rawUserCount, 10) 
+                  : rawUserCount
+                log("info", "im.chat.get 返回结果", {
+                  chatId,
+                  userCount,
+                  rawUserCount,
+                  userCountType: typeof userCount,
+                })
+                if (typeof userCount === "number" && !isNaN(userCount)) {
+                  groupMemberCache.set(String(chatId), userCount)
+                  if (userCount <= 2) shouldReply = true
+                } else {
+                  log("warn", "user_count 转换失败", {
+                    chatId,
+                    rawUserCount,
+                    userCount,
+                  })
+                }
+              } catch (err) {
+                log("error", "im.chat.get 调用失败", {
+                  chatId,
+                  error: err instanceof Error ? err.message : String(err),
+                })
+              }
+            }
+          }
         }
+        log("info", "shouldReply 最终判定结果", {
+          chatId,
+          chatType,
+          shouldReply,
+        })
         fallbackShouldReply = shouldReply
 
         const sender = (data as { sender?: { sender_id?: { open_id?: string } } }).sender
