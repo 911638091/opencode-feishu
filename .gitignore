@@ -20,3 +20,6 @@ _Organized
 docs
 output
 .npm-cache
+
+# OpenCode internal
+.omo/
